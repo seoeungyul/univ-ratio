@@ -115,45 +115,165 @@ function readTargetUniversities_(ss) {
 }
 
 /* ══════════════════════════════════════════════════════════
- *  3. 시트 함수 (커스텀 함수)
+ *  3. 시트 함수 (커스텀 함수)  — 기존 RATIO / RATIO_TABLE 을 이 블록으로 교체
+ *
+ *   =RATIO("평택대")                                        → 전체 합계 3칸
+ *   =RATIO("평택대", , "PTU교과")                            → 그 전형의 합계 3칸
+ *   =RATIO("평택대","AI소프트웨어학과")                       → 전형별 표 (5열)
+ *   =RATIO("평택대","AI소프트웨어학과","PTU교과")             → 16 | 5 | 0.31  (3칸)
+ *   =RATIO("평택대","AI소프트웨어학과","PTU교과","경쟁률")     → 0.31        (1칸)
+ *
+ *   =RATIO_TYPES("평택대")                                  → 전형 이름 목록
+ *   =RATIO_TABLE("평택대","PTU")                            → 전형 필터 가능
  * ══════════════════════════════════════════════════════════ */
 
+/** 이름 비교용 정규화 (공백·괄호·하이픈 무시) */
+function ratioKey_(s) {
+  return String(s === null || s === undefined ? '' : s)
+    .replace(/[\s()（）·・.\-_]/g, '')
+    .toLowerCase();
+}
+
+/** '경쟁률' 같은 값 이름 → 열 번호(0:모집인원 1:지원인원 2:경쟁률). 없으면 -1, 모르면 -2 */
+function ratioField_(field) {
+  if (field === undefined || field === null || field === '') return -1;
+  var k = ratioKey_(field);
+  var map = { 모집인원: 0, 모집: 0, 정원: 0, 지원인원: 1, 지원: 1, 접수인원: 1, 경쟁률: 2, 경쟁: 2, 배수: 2 };
+  for (var name in map) if (ratioKey_(name) === k) return map[name];
+  return -2;
+}
+
+function ratioCut_(rows, idx) {
+  return idx < 0
+    ? rows
+    : rows.map(function (r) {
+        return [r[idx]];
+      });
+}
+
+/** 전형명으로 그룹 고르기 — 완전 일치 우선, 없으면 부분 일치 */
+function ratioPickGroups_(groups, tKey) {
+  var exact = groups.filter(function (g) {
+    return ratioKey_(g.name) === tKey;
+  });
+  if (exact.length) return exact;
+  return groups.filter(function (g) {
+    return ratioKey_(g.name).indexOf(tKey) >= 0;
+  });
+}
+
+function ratioTotalOf_(g) {
+  return g.total || totalizeUnits(g.units);
+}
+
 /**
- * 대학(과 모집단위)의 경쟁률.
- * @param {string} univ 대학명 (부분 이름 가능)
- * @param {string} unit 모집단위명 (생략하면 전체)
- * @return {Array} [모집인원, 지원인원, 경쟁률]
+ * 대학·모집단위·전형별 경쟁률.
+ * @param {string} univ  대학명 (부분 이름 가능)
+ * @param {string} unit  모집단위명 (생략 가능)
+ * @param {string} type  전형명 (생략 가능, 부분 이름 가능)
+ * @param {string} field '모집인원' | '지원인원' | '경쟁률' 중 하나만 뽑을 때 (생략 가능)
+ * @return {Array} 표
  * @customfunction
  */
-function RATIO(univ, unit) {
+function RATIO(univ, unit, type, field) {
   if (!univ) return '대학명을 입력하세요';
-  var r = fetchRatioByName(String(univ));
 
-  if (!unit) {
-    var s = r.summary;
-    return s ? [[s.quota, s.applied, s.ratio]] : '집계 없음';
+  var idx = ratioField_(field);
+  if (idx === -2) return '네 번째 값은 모집인원 / 지원인원 / 경쟁률 중 하나입니다';
+
+  var r = fetchRatioByName(String(univ));
+  var uKey = ratioKey_(unit);
+  var tKey = ratioKey_(type);
+
+  var groups = r.groups;
+  if (tKey) {
+    groups = ratioPickGroups_(groups, tKey);
+    if (!groups.length) return "'" + type + "' 전형을 찾지 못했습니다";
   }
-  var key = String(unit).replace(/\s/g, '');
+
+  /* ── 모집단위를 안 적은 경우 ── */
+  if (!uKey) {
+    if (!tKey) {
+      var s = r.summary;
+      return s ? ratioCut_([[s.quota, s.applied, s.ratio]], idx) : '집계 없음';
+    }
+    var sums = [];
+    groups.forEach(function (g) {
+      var t = ratioTotalOf_(g);
+      if (t) sums.push([g.name, t.quota, t.applied, t.ratio]);
+    });
+    if (!sums.length) return '집계 없음';
+    // 전형 하나로 좁혀졌으면 이름 없이 숫자만
+    if (sums.length === 1) return ratioCut_([sums[0].slice(1)], idx);
+    return idx < 0
+      ? sums
+      : sums.map(function (x) {
+          return [x[0], x[1 + idx]];
+        });
+  }
+
+  /* ── 모집단위를 적은 경우 ── */
   var out = [];
-  r.groups.forEach(function (g) {
+  groups.forEach(function (g) {
     g.units.forEach(function (u) {
-      if (u.unit.replace(/\s/g, '').indexOf(key) >= 0) out.push([g.name, u.unit, u.quota, u.applied, u.ratio]);
+      if (ratioKey_(u.unit).indexOf(uKey) >= 0) out.push([g.name, u.unit, u.quota, u.applied, u.ratio]);
     });
   });
-  return out.length ? out : '모집단위를 찾지 못했습니다';
+  if (!out.length) return "'" + unit + "' 모집단위를 찾지 못했습니다";
+
+  // 전형까지 지정했으면 이름 칸을 빼고 숫자만 돌려준다 (한 줄이면 3칸)
+  if (tKey) {
+    return ratioCut_(
+      out.map(function (x) {
+        return x.slice(2);
+      }),
+      idx
+    );
+  }
+  return idx < 0
+    ? out
+    : out.map(function (x) {
+        return [x[0], x[1], x[2 + idx]];
+      });
+}
+
+/**
+ * 그 대학이 어떤 전형 이름을 쓰는지 확인용. (RATIO 세 번째 인자에 넣을 이름)
+ * @param {string} univ 대학명
+ * @return {Array} 표
+ * @customfunction
+ */
+function RATIO_TYPES(univ) {
+  if (!univ) return '대학명을 입력하세요';
+  var r = fetchRatioByName(String(univ));
+  var rows = [['전형', '모집인원', '지원인원', '경쟁률']];
+  r.groups.forEach(function (g) {
+    var t = ratioTotalOf_(g);
+    rows.push([g.name, t ? t.quota : '', t ? t.applied : '', t ? t.ratio : '']);
+  });
+  return rows.length > 1 ? rows : '전형 정보가 없습니다';
 }
 
 /**
  * 전형·모집단위별 경쟁률 표 전체.
  * @param {string} univ 대학명
+ * @param {string} type 전형명 (생략하면 전체)
  * @return {Array} 표
  * @customfunction
  */
-function RATIO_TABLE(univ) {
+function RATIO_TABLE(univ, type) {
   if (!univ) return '대학명을 입력하세요';
   var r = fetchRatioByName(String(univ));
+
+  var groups = r.groups;
+  var tKey = ratioKey_(type);
+  if (tKey) {
+    groups = ratioPickGroups_(groups, tKey);
+    if (!groups.length) return "'" + type + "' 전형을 찾지 못했습니다";
+  }
+
   var rows = [['전형', '계열', '모집단위', '모집인원', '지원인원', '경쟁률']];
-  r.groups.forEach(function (g) {
+  groups.forEach(function (g) {
     if (g.units.length) {
       g.units.forEach(function (u) {
         rows.push([g.name, u.college, u.unit, u.quota, u.applied, u.ratio]);
@@ -166,7 +286,7 @@ function RATIO_TABLE(univ) {
 }
 
 /**
- * 대학 검색 — 이름과 경쟁률 페이지 주소를 돌려준다.
+ * 대학 검색 — 이름과 경쟁률 페이지 주소를 돌려준다. (기존과 동일)
  * @param {string} keyword 검색어
  * @return {Array} 표
  * @customfunction
@@ -185,7 +305,6 @@ function RATIO_UNIV_LIST(keyword) {
   });
   return rows;
 }
-
 /* ══════════════════════════════════════════════════════════
  *  4. 가져오기 (UrlFetchApp + 캐시)
  * ══════════════════════════════════════════════════════════ */
