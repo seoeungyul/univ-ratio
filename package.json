@@ -1,0 +1,16 @@
+{
+  "name": "univ-ratio-api",
+  "version": "1.0.0",
+  "description": "진학어플라이 SmartRatio / 유웨이 파워경쟁률에서 대학 경쟁률을 가져오는 API 서버",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node test/validate.js",
+    "check:gas": "node test/gas-smoke.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "private": true
+}
